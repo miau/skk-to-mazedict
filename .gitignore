@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 .cache/
 output_*.txt
+!output_mazedict.txt
 *.egg-info/

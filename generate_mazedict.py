@@ -176,6 +176,15 @@ def expand_mazekai(word: str, alignment: list[str]) -> list[str]:
 
 # ─── ファイル取得 ─────────────────────────────────────────────────────────
 
+def _decode_auto(data: bytes, fallback: str) -> str:
+    """UTF-16 BOM → utf-16、UTF-8 として有効 → utf-8、それ以外 → fallback"""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(fallback, errors="replace")
+
 def fetch(url: str, cache: Path, encoding: str) -> str:
     if cache.exists():
         print(f"  キャッシュ使用: {cache}", file=sys.stderr)
@@ -183,13 +192,13 @@ def fetch(url: str, cache: Path, encoding: str) -> str:
     print(f"  ダウンロード: {url}", file=sys.stderr)
     with urllib.request.urlopen(url) as r:
         data = r.read()
-    # UTF-16 BOM (FF FE) を自動検出
-    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        text = data.decode("utf-16")
-    else:
-        text = data.decode(encoding, errors="replace")
+    text = _decode_auto(data, encoding)
     cache.write_text(text, encoding="utf-8")
     return text
+
+def read_local(path: Path, fallback: str) -> str:
+    """ローカルファイルをエンコーディング自動検出で読む（UTF-16/UTF-8/fallback）"""
+    return _decode_auto(path.read_bytes(), fallback)
 
 # ─── メイン ─────────────────────────────────────────────────────────────
 
@@ -208,9 +217,9 @@ def main() -> None:
 
     # ── 辞書ロード ──────────────────────────────────────────────────────
     log("=== 辞書ロード ===")
-    skk_text  = (Path(args.skk).read_text(encoding="euc-jp", errors="replace")
+    skk_text  = (read_local(Path(args.skk), "euc-jp")
                  if args.skk else fetch(SKK_JISYO_URL, cache / "SKK-JISYO.L", "euc-jp"))
-    maze_text = (Path(args.mazedict).read_text(encoding="utf-8", errors="replace")
+    maze_text = (read_local(Path(args.mazedict), "utf-8")
                  if args.mazedict else fetch(MAZEDICT_URL, cache / "mazedict.txt", "utf-8"))
 
     log("SKK-JISYO.L パース中…")
@@ -248,6 +257,7 @@ def main() -> None:
                 continue
 
             for word in cands:
+                word = word.split(";")[0]  # アノテーション（;注釈）を除去
                 if not is_all_kanji(word) or len(word) < 2:
                     continue
                 if len(word) > args.max_kanji:
