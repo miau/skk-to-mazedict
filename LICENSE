@@ -1,0 +1,13 @@
+This program and its output are distributed under the GNU General Public
+License, version 2 or (at your option) any later version.
+
+The output dictionary (output_mazedict.txt) is derived from SKK-JISYO.L
+(GPL) and mazedict.txt (which incorporates kwmaze.dic, also GPL), so the
+output inherits the GPL.
+
+The full text of the GPL v2 is available at:
+  https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+KANJIDIC2 (CC BY-SA 4.0, EDRDG) is used only at build time to compute
+kanji readings and is not distributed with this tool; its license does not
+propagate to the output.

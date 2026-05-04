@@ -56,6 +56,11 @@ def load_skk_dict(text: str) -> tuple[dict, dict]:
         if not m:
             continue
         reading = m.group(1)
+        # > (接尾辞) / < (接頭辞) マーカーを除去して通常エントリとして扱う
+        if reading.startswith(">") or reading.startswith("<"):
+            reading = reading[1:]
+        if not reading:
+            continue
         cands   = _parse_candidates(m.group(2))
         target  = okuri_ari if section == "ari" else okuri_nasi
         for c in cands:
