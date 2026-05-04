@@ -136,25 +136,42 @@ class KanjiReadings:
         self._cache[kanji] = readings
         return readings
 
+# ─── 連濁テーブル ────────────────────────────────────────────────────────
+
+# 先頭1文字の連濁（有声→無声）を解除するための変換テーブル
+_RENDAKU = str.maketrans(
+    'がぎぐげござじずぜぞだぢづでどばびぶべぼ',
+    'かきくけこさしすせそたちつてとはひふへほ',
+)
+
+def _devoice(s: str) -> str:
+    """先頭1文字のみ連濁を解除（がみ→かみ等）"""
+    return s[0].translate(_RENDAKU) + s[1:] if s else s
+
 # ─── DP アライメント ─────────────────────────────────────────────────────
 
 def align(word: str, reading: str, kdb: KanjiReadings) -> list[str] | None:
     """
-    KANJIDIC2 の読み候補 + 動的計画法で word の各漢字に reading を割り当てる。
+    KANJIDIC2 の読み候補 + 動的計画法で word の各文字に reading を割り当てる。
+    - 漢字: KANJIDIC2 の読み候補（連濁形も許容）
+    - ひらがな: 自身と完全一致のみ
     成功: ['わ', 'めい']  失敗（熟字訓等）: None
     """
     n, m = len(word), len(reading)
-    cands = [kdb.get(word[i]) for i in range(n)]
+    # ひらがなは自身のみ、漢字は KANJIDIC2 から取得
+    cands = [[ch] if is_hiragana(ch) else kdb.get(ch) for ch in word]
 
     def search(ki: int, ri: int) -> list[str] | None:
         if ki == n:
             return [] if ri == m else None
         for r in cands[ki]:
             end = ri + len(r)
-            if reading[ri:end] == r:
+            seg = reading[ri:end]
+            # 完全一致、または先頭1文字の連濁を解除したものが一致
+            if seg == r or _devoice(seg) == r:
                 rest = search(ki + 1, end)
                 if rest is not None:
-                    return [r] + rest
+                    return [seg] + rest  # 連濁形のまま記録
         return None
 
     return search(0, 0)
@@ -163,14 +180,22 @@ def align(word: str, reading: str, kdb: KanjiReadings) -> list[str] | None:
 
 def expand_mazekai(word: str, alignment: list[str]) -> list[str]:
     """
-    2^N - 2 通りの交ぜ書きキーを返す（全かな・全漢字を除く）。
+    漢字位置のみを漢字/かな交互に切り替えた交ぜ書きキーを返す（全かな・全漢字を除く）。
     例: word='和名', alignment=['わ','めい'] → ['和めい', 'わ名']
+    例: word='痛み止め', alignment=['いた','み','ど','め'] → ['痛みどめ', 'いたみ止め']
+    漢字が1文字以下の場合は空リストを返す。
     """
-    n = len(word)
-    all_kanji_mask = (1 << n) - 1
+    kanji_pos = [i for i in range(len(word)) if is_kanji(word[i])]
+    nk = len(kanji_pos)
+    if nk < 2:
+        return []
+    all_kanji_mask = (1 << nk) - 1
     keys = []
     for mask in range(1, all_kanji_mask):  # 全かな(0)・全漢字(all_kanji_mask) を除く
-        parts = [word[i] if (mask >> i) & 1 else alignment[i] for i in range(n)]
+        parts = list(word)
+        for ki, pos in enumerate(kanji_pos):
+            if not (mask >> ki) & 1:
+                parts[pos] = alignment[pos]  # 漢字をその読みで置換
         keys.append("".join(parts))
     return keys
 
@@ -258,9 +283,10 @@ def main() -> None:
 
             for word in cands:
                 word = word.split(";")[0]  # アノテーション（;注釈）を除去
-                if not is_all_kanji(word) or len(word) < 2:
+                nk = sum(1 for c in word if is_kanji(c))
+                if nk < 2:  # 漢字が2文字未満は展開不要
                     continue
-                if len(word) > args.max_kanji:
+                if nk > args.max_kanji:
                     skip_long += 1
                     continue
 
