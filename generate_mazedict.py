@@ -96,11 +96,29 @@ def merge_dicts(*dicts) -> dict:
 
 # ─── KANJIDIC2 読み取得 ──────────────────────────────────────────────────
 
+# 五段動詞の終止形末尾 → 連用形末尾（す→し、う→い 等）
+_U_TO_I = str.maketrans('うくぐすつぬぶむる', 'いきぎしちにびみり')
+
+def _renyou_forms(stem: str, okuri: str) -> list[str]:
+    """
+    訓読み「ほ.す」「あ.う」「う.ける」から連用形の読みを作る。
+    例: ほ.す→['ほし']  あ.う→['あい']  う.ける→['うけ', 'うけり']
+    る で終わる語は五段（と.る→とり）か一段（う.ける→うけ）か区別できないため両方返す。
+    形容詞（〜い）などの u 段以外で終わる送り仮名は対象外。
+    """
+    if not okuri or okuri[-1] not in 'うくぐすつぬぶむる':
+        return []
+    forms = [stem + okuri[:-1] + okuri[-1].translate(_U_TO_I)]
+    if okuri[-1] == 'る' and len(okuri) >= 2:
+        forms.insert(0, stem + okuri[:-1])  # 一段動詞
+    return forms
+
 class KanjiReadings:
     """KANJIDIC2（jamdict 経由）から漢字ごとの読み候補を返すキャッシュ付きクラス"""
 
     def __init__(self) -> None:
         self._cache: dict[str, list[str]] = {}
+        self._ext_cache: dict[str, list[str]] = {}
         self._jam = None
 
     def _init(self) -> bool:
@@ -136,6 +154,37 @@ class KanjiReadings:
         self._cache[kanji] = readings
         return readings
 
+    def get_extended(self, kanji: str) -> list[str]:
+        """
+        get() の読みに、連用形（干=ほし、合=あい）と接辞マーカー（-）を外した読みを追加。
+        get() だけでは「場合（ばあい）」「干場（ほしば）」のような連用形を含む語が分割できない。
+        """
+        if kanji in self._ext_cache:
+            return self._ext_cache[kanji]
+        readings = list(self.get(kanji))
+        extra: list[str] = []
+        if self._init():
+            try:
+                import jaconv
+                result = self._jam.lookup(kanji)
+                for ch in result.chars:
+                    for rmg in ch.rm_groups:
+                        for r in rmg.readings:
+                            if r.r_type not in ("ja_on", "ja_kun", "nanori"):
+                                continue
+                            hira = jaconv.kata2hira(r.value).strip("-")
+                            stem, _, okuri = hira.partition(".")
+                            extra.append(stem)
+                            if r.r_type == "ja_kun":
+                                extra.extend(_renyou_forms(stem, okuri))
+            except Exception:
+                pass
+        for e in extra:
+            if e and e not in readings:
+                readings.append(e)
+        self._ext_cache[kanji] = readings
+        return readings
+
 # ─── 連濁テーブル ────────────────────────────────────────────────────────
 
 # 先頭1文字の連濁（有声→無声）を解除するための変換テーブル
@@ -155,11 +204,17 @@ def align(word: str, reading: str, kdb: KanjiReadings) -> list[str] | None:
     KANJIDIC2 の読み候補 + 動的計画法で word の各文字に reading を割り当てる。
     - 漢字: KANJIDIC2 の読み候補（連濁形も許容）
     - ひらがな: 自身と完全一致のみ
+    基本の読みで失敗した場合のみ連用形などの拡張読みで再試行する
+    （既存のアライメント結果を変えないため）。
     成功: ['わ', 'めい']  失敗（熟字訓等）: None
     """
+    return (_align(word, reading, kdb.get)
+            or _align(word, reading, kdb.get_extended))
+
+def _align(word: str, reading: str, get_readings) -> list[str] | None:
     n, m = len(word), len(reading)
     # ひらがなは自身のみ、漢字は KANJIDIC2 から取得
-    cands = [[ch] if is_hiragana(ch) else kdb.get(ch) for ch in word]
+    cands = [[ch] if is_hiragana(ch) else get_readings(ch) for ch in word]
 
     def search(ki: int, ri: int) -> list[str] | None:
         if ki == n:
