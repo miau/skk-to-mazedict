@@ -197,6 +197,36 @@ def _devoice(s: str) -> str:
     """先頭1文字のみ連濁を解除（がみ→かみ等）"""
     return s[0].translate(_RENDAKU) + s[1:] if s else s
 
+# 促音・撥音の後の半濁音（ぽん→ほん）を解除するための変換テーブル
+_HANDAKU = str.maketrans('ぱぴぷぺぽ', 'はひふへほ')
+
+def _unhandaku(s: str) -> str:
+    """先頭1文字のみ半濁音を解除（ぽん→ほん等）"""
+    return s[0].translate(_HANDAKU) + s[1:] if s else s
+
+# 促音便になりうる読みの末尾（がく→がっ、いち→いっ、ひき→ひっ、とり→とっ）
+_SOKUON_TAILS = 'くきちつり'
+
+def _seg_matches(seg: str, r: str, prev: str, extended: bool) -> bool:
+    """
+    読みの一部 seg が漢字の読み候補 r に一致するか。
+    基本: 完全一致、または先頭1文字の連濁を解除して一致。
+    extended: 直前が っ/ん のときの半濁音（切符 きっ+ぷ、散歩 さん+ぽ）と、
+              末尾の促音便（学校 がっ+こう、取手 とっ+て）も許容。
+    """
+    if seg == r or _devoice(seg) == r:
+        return True
+    if not extended:
+        return False
+    heads = {seg, _devoice(seg)}
+    if prev and prev[-1] in 'っん':
+        heads.add(_unhandaku(seg))
+    if r in heads:
+        return True
+    if len(r) >= 2 and r[-1] in _SOKUON_TAILS and seg[-1] == 'っ':
+        return any(h[:-1] == r[:-1] for h in heads)
+    return False
+
 # ─── DP アライメント ─────────────────────────────────────────────────────
 
 def align(word: str, reading: str, kdb: KanjiReadings) -> list[str] | None:
@@ -204,32 +234,31 @@ def align(word: str, reading: str, kdb: KanjiReadings) -> list[str] | None:
     KANJIDIC2 の読み候補 + 動的計画法で word の各文字に reading を割り当てる。
     - 漢字: KANJIDIC2 の読み候補（連濁形も許容）
     - ひらがな: 自身と完全一致のみ
-    基本の読みで失敗した場合のみ連用形などの拡張読みで再試行する
+    基本の読みで失敗した場合のみ、連用形などの拡張読み・促音便・半濁音で再試行する
     （既存のアライメント結果を変えないため）。
     成功: ['わ', 'めい']  失敗（熟字訓等）: None
     """
-    return (_align(word, reading, kdb.get)
-            or _align(word, reading, kdb.get_extended))
+    return (_align(word, reading, kdb.get, False)
+            or _align(word, reading, kdb.get_extended, True))
 
-def _align(word: str, reading: str, get_readings) -> list[str] | None:
+def _align(word: str, reading: str, get_readings, extended: bool) -> list[str] | None:
     n, m = len(word), len(reading)
     # ひらがなは自身のみ、漢字は KANJIDIC2 から取得
     cands = [[ch] if is_hiragana(ch) else get_readings(ch) for ch in word]
 
-    def search(ki: int, ri: int) -> list[str] | None:
+    def search(ki: int, ri: int, prev: str) -> list[str] | None:
         if ki == n:
             return [] if ri == m else None
         for r in cands[ki]:
             end = ri + len(r)
             seg = reading[ri:end]
-            # 完全一致、または先頭1文字の連濁を解除したものが一致
-            if seg == r or _devoice(seg) == r:
-                rest = search(ki + 1, end)
+            if len(seg) == len(r) and _seg_matches(seg, r, prev, extended):
+                rest = search(ki + 1, end, seg)
                 if rest is not None:
-                    return [seg] + rest  # 連濁形のまま記録
+                    return [seg] + rest  # 連濁形・促音便形のまま記録
         return None
 
-    return search(0, 0)
+    return search(0, 0, "")
 
 # ─── 交ぜ書き展開 ────────────────────────────────────────────────────────
 
@@ -332,7 +361,9 @@ def main() -> None:
             if idx % 20000 == 0:
                 log(f"  {idx:,}/{len(items):,}…")
 
-            base = reading[:-1] if reading.endswith(OKURI_DASH) else reading
+            # 送りあり由来のキー（わるよ―）は展開後のキーにも ― を付ける（わる酔―、悪よ―）
+            suffix = OKURI_DASH if reading.endswith(OKURI_DASH) else ""
+            base = reading[:-1] if suffix else reading
             if not is_all_hiragana(base):
                 continue
 
@@ -351,6 +382,7 @@ def main() -> None:
                     continue
 
                 for key in expand_mazekai(word, alignment):
+                    key += suffix
                     if word not in new_entries[key]:
                         new_entries[key].append(word)
                 ok += 1
